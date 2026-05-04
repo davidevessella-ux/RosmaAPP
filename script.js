@@ -18,7 +18,12 @@ const pricePerKgInput = document.getElementById('pricePerKg');
 const aggiornaCalcoliBtn = document.getElementById('aggiornaCalcoliBtn');
 const apriSimulazioneBtn = document.getElementById('apriSimulazioneBtn');
 const fattureListContainer = document.getElementById('fattureListContainer');
-const cancellaTutteFattureBtn = document.getElementById('cancellaTutteFattureBtn');
+
+// Backup elementi
+const esportaExcelBtn = document.getElementById('esportaExcelBtn');
+const esportaBackupBtn = document.getElementById('esportaBackupBtn');
+const importaBackupInput = document.getElementById('importaBackupInput');
+const cancellaTuttiDatiBtn = document.getElementById('cancellaTuttiDatiBtn');
 
 // Modale fattura
 const modal = document.getElementById('fatturaModal');
@@ -40,7 +45,7 @@ const msgSub = document.getElementById('msgSub');
 // Charts
 let currentYearKgChart, currentYearEurosChart, fullHistoryChart;
 
-// Funzioni messaggi
+// ========== FUNZIONI MESSAGGI ==========
 function showMessage(type) {
     if (type === 'harvest') {
         msgIcon.innerHTML = '🌿💪';
@@ -50,6 +55,18 @@ function showMessage(type) {
         msgIcon.innerHTML = '📄💰';
         msgText.innerHTML = 'Rita ti tornano i conti?';
         msgSub.innerHTML = 'Fattura salvata correttamente';
+    } else if (type === 'backup') {
+        msgIcon.innerHTML = '💾✅';
+        msgText.innerHTML = 'Backup salvato!';
+        msgSub.innerHTML = 'Dati esportati con successo';
+    } else if (type === 'import') {
+        msgIcon.innerHTML = '📥✅';
+        msgText.innerHTML = 'Dati importati!';
+        msgSub.innerHTML = 'App aggiornata con successo';
+    } else if (type === 'delete_all') {
+        msgIcon.innerHTML = '🗑️⚠️';
+        msgText.innerHTML = 'Tutti i dati cancellati';
+        msgSub.innerHTML = 'Si è ricominciato da capo';
     }
     messageOverlay.classList.add('active');
 }
@@ -63,7 +80,7 @@ function setDefaultDate() {
     if (!datePicker.value) datePicker.value = new Date().toISOString().slice(0, 10);
 }
 
-// Salvataggi
+// ========== SALVATAGGI ==========
 function salvaPeriodo() { localStorage.setItem('rosmarino_produzioni_periodo', JSON.stringify(produzioniPeriodo)); }
 function salvaArchivio() { localStorage.setItem('rosmarino_archivio_produzioni_totali', JSON.stringify(archivioProduzioni)); }
 function salvaFatture() { localStorage.setItem('rosmarino_storico_fatture', JSON.stringify(storicoFatture)); }
@@ -82,7 +99,126 @@ function loadAllData() {
     refreshAll();
 }
 
-// Aggiungi raccolto
+// ========== BACKUP E ESPORTAZIONE ==========
+function esportaExcel() {
+    // Prepara i dati per Excel
+    const produzioneData = archivioProduzioni.map(p => ({
+        'Data': p.date,
+        'Kg Raccolti': p.kg,
+        'Ricavo Netto (€)': (p.kg * prezzoKgCorrente).toFixed(2)
+    }));
+    
+    const fattureData = storicoFatture.map(f => ({
+        'Numero Fattura': f.numero,
+        'Data': f.data,
+        'Kg Totali': f.kgTotali,
+        'Prezzo/kg (€)': f.prezzoKg,
+        'Imponibile (€)': f.imponibile.toFixed(2),
+        'IVA 4% (€)': f.iva.toFixed(2),
+        'Totale Fattura (€)': f.totale.toFixed(2)
+    }));
+    
+    // Crea workbook
+    const wb = XLSX.utils.book_new();
+    const wsProduzione = XLSX.utils.json_to_sheet(produzioneData);
+    const wsFatture = XLSX.utils.json_to_sheet(fattureData);
+    
+    // Aggiungi riepilogo
+    const totalKg = archivioProduzioni.reduce((s, p) => s + p.kg, 0);
+    const totalRevenue = totalKg * prezzoKgCorrente;
+    const totalFatture = storicoFatture.reduce((s, f) => s + f.totale, 0);
+    
+    const riepilogo = [
+        ['RIEPILOGO GENERALE'],
+        ['Totale Kg prodotti (storico)', totalKg.toFixed(2)],
+        ['Ricavo totale (€ senza IVA)', totalRevenue.toFixed(2)],
+        ['Totale Fatture emesse (€)', totalFatture.toFixed(2)],
+        ['Numero fatture emesse', storicoFatture.length],
+        ['Prezzo corrente al kg (€)', prezzoKgCorrente],
+        ['IVA applicata', '4%']
+    ];
+    const wsRiepilogo = XLSX.utils.aoa_to_sheet(riepilogo);
+    
+    XLSX.utils.book_append_sheet(wb, wsProduzione, 'Produzioni');
+    XLSX.utils.book_append_sheet(wb, wsFatture, 'Fatture');
+    XLSX.utils.book_append_sheet(wb, wsRiepilogo, 'Riepilogo');
+    
+    const today = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `rosmarino_backup_${today}.xlsx`);
+    showMessage('backup');
+}
+
+function esportaBackupJSON() {
+    const backupData = {
+        versione: '1.0',
+        dataBackup: new Date().toISOString(),
+        produzioniPeriodo: produzioniPeriodo,
+        archivioProduzioni: archivioProduzioni,
+        storicoFatture: storicoFatture,
+        prezzoKgCorrente: prezzoKgCorrente
+    };
+    
+    const dataStr = JSON.stringify(backupData, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rosmarino_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showMessage('backup');
+}
+
+function importaBackup(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const backupData = JSON.parse(e.target.result);
+            
+            // Verifica struttura
+            if (backupData.produzioniPeriodo !== undefined) produzioniPeriodo = backupData.produzioniPeriodo;
+            if (backupData.archivioProduzioni !== undefined) archivioProduzioni = backupData.archivioProduzioni;
+            if (backupData.storicoFatture !== undefined) storicoFatture = backupData.storicoFatture;
+            if (backupData.prezzoKgCorrente !== undefined) prezzoKgCorrente = backupData.prezzoKgCorrente;
+            
+            // Salva tutto
+            salvaPeriodo();
+            salvaArchivio();
+            salvaFatture();
+            salvaPrezzo();
+            pricePerKgInput.value = prezzoKgCorrente;
+            
+            refreshAll();
+            showMessage('import');
+        } catch (error) {
+            alert('File non valido. Assicurati di utilizzare un file JSON di backup di Rosmarino App.');
+        }
+    };
+    reader.readAsText(file);
+}
+
+function cancellaTuttiDati() {
+    if (confirm('⚠️ ATTENZIONE: Cancellerai TUTTI i dati (produzioni, fatture, storico). Questa operazione è irreversibile! Sei sicuro?')) {
+        produzioniPeriodo = [];
+        archivioProduzioni = [];
+        storicoFatture = [];
+        prezzoKgCorrente = 5.50;
+        pricePerKgInput.value = prezzoKgCorrente;
+        
+        salvaPeriodo();
+        salvaArchivio();
+        salvaFatture();
+        salvaPrezzo();
+        
+        refreshAll();
+        showMessage('delete_all');
+    }
+}
+
+// ========== FUNZIONI PRINCIPALI ==========
 function addRecord() {
     let data = datePicker.value;
     if (!data) { alert("Seleziona data"); return; }
@@ -113,7 +249,6 @@ function addRecord() {
     refreshAll();
 }
 
-// Elimina record
 function deleteRecord(idx) {
     if (confirm("Elimina produzione?")) {
         const rem = produzioniPeriodo[idx];
@@ -124,7 +259,6 @@ function deleteRecord(idx) {
     }
 }
 
-// Modifica record
 function editRecord(idx, newKg) {
     if (isNaN(newKg) || newKg <= 0) { alert("Kg non valido"); return false; }
     newKg = Math.round(newKg * 100) / 100;
@@ -214,15 +348,8 @@ function confermaFattura() {
 }
 
 function chiudiModal() { modal.style.display = "none"; }
-function cancellaFatture() {
-    if (confirm("Eliminare tutto storico?")) {
-        storicoFatture = [];
-        salvaFatture();
-        refreshAll();
-    }
-}
 
-// Render tabella
+// Render
 function renderTable() {
     if (produzioniPeriodo.length === 0) {
         tableBody.innerHTML = '<tr><td colspan="3" style="text-align:center;">Nessuna produzione</td></tr>';
@@ -348,17 +475,25 @@ function refreshAll() {
     updateAllCharts();
 }
 
-// Eventi
+// ========== EVENTI ==========
 addBtn.addEventListener('click', addRecord);
 aggiornaCalcoliBtn.addEventListener('click', aggiornaParametri);
 apriSimulazioneBtn.addEventListener('click', apriModal);
-cancellaTutteFattureBtn.addEventListener('click', cancellaFatture);
 pricePerKgInput.addEventListener('change', aggiornaParametri);
 confermaFatturaModaleBtn.addEventListener('click', confermaFattura);
 closeModalBtn.addEventListener('click', chiudiModal);
 annullaModaleBtn.addEventListener('click', chiudiModal);
 modalPrezzoKg.addEventListener('input', calcolaAnteprimaModal);
 window.addEventListener('click', (e) => { if (e.target === modal) chiudiModal(); });
+
+// Backup eventi
+esportaExcelBtn.addEventListener('click', esportaExcel);
+esportaBackupBtn.addEventListener('click', esportaBackupJSON);
+importaBackupInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) importaBackup(e.target.files[0]);
+    importaBackupInput.value = '';
+});
+cancellaTuttiDatiBtn.addEventListener('click', cancellaTuttiDati);
 
 // Avvio
 setDefaultDate();
